@@ -2,75 +2,65 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
-const socketIo = require('socket.io');
 const http = require('http');
-const User = require('./models/user'); // Import User model
+const { Server } = require('socket.io'); // Corrected import for Socket.io
+const cors = require('cors');
+const connectDB = require('./db');
+const authRoutes = require('./routes/authRoutes');
+const chatRoutes = require('./routes/chatRoutes');
+const { GroupMessage } = require('./models/groupMessage'); // Import message model
 
-// Load environment variables from .env file
-dotenv.config();
+dotenv.config(); // Load environment variables
 
-// Create an Express app and a HTTP server
+// Initialize Express and create an HTTP server
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = new Server(server, { cors: { origin: "*" } }); // Allow CORS for WebSocket
 
-// MongoDB Connection (using the URI from .env)
-mongoose.connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-})
-.then(() => {
-    console.log('Connected to MongoDB');
-})
-.catch(err => {
-    console.log('Error connecting to MongoDB:', err);
-});
+// Connect to MongoDB
+connectDB();
 
 // Middleware
+app.use(cors()); // Enable CORS
 app.use(express.json()); // Parse incoming JSON requests
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded data
 
-// Routes
-// Sign up route
-app.post('/api/auth/signup', (req, res) => {
-    const { username, firstname, lastname, password } = req.body;
+// Use routes
+app.use("/auth", authRoutes);
+app.use("/chat", chatRoutes(io)); // Pass `io` to chat routes
 
-    // Create a new user instance
-    const newUser = new User({
-        username,
-        firstname,
-        lastname,
-        password,
+// WebSocket connection handling
+io.on("connection", (socket) => {
+    console.log("A user connected");
+
+    // Join a specific chat room
+    socket.on("joinRoom", (room) => {
+        socket.join(room);
+        console.log(`User joined room: ${room}`);
     });
 
-    // Save the new user to MongoDB
-    newUser.save()
-        .then(() => res.status(201).send('User created successfully'))
-        .catch(err => res.status(500).json({ error: err.message }));
-});
-
-// Socket.io connection
-io.on('connection', (socket) => {
-    console.log('A user connected');
-    
     // Handle receiving and sending chat messages
-    socket.on('sendMessage', (messageData) => {
-        console.log('Message received:', messageData);
-        
-        // Emit the message to all users in the room
-        io.to(messageData.room).emit('receiveMessage', messageData);
+    socket.on("sendMessage", async (messageData) => {
+        console.log("Message received:", messageData);
 
-        // Optionally, store the message in MongoDB (to be added later)
+        const { from_user, room, message } = messageData;
+
+        // Store message in MongoDB
+        const newMessage = new GroupMessage({ from_user, room, message });
+        await newMessage.save();
+
+        // Emit the message to users in the same room
+        io.to(room).emit("receiveMessage", messageData);
     });
 
     // Handle user disconnect
-    socket.on('disconnect', () => {
-        console.log('A user disconnected');
+    socket.on("disconnect", () => {
+        console.log("A user disconnected");
     });
 });
 
-// Start the server on the specified port (from .env or default to 5000)
+// Start the server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
